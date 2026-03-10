@@ -263,8 +263,15 @@ struct kobj_type memreg_type = {
 #endif
 };
 
-static int memreg_mmap(struct file *file, struct kobject *kobj, struct bin_attribute *attr,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0)
+static int memreg_mmap(struct file *file, struct kobject *kobj,
+		       const struct bin_attribute *attr,
 		       struct vm_area_struct *vma)
+#else
+static int memreg_mmap(struct file *file, struct kobject *kobj,
+		       struct bin_attribute *attr,
+		       struct vm_area_struct *vma)
+#endif
 {
 	struct aq_memreg *memreg = attr->private;
 	unsigned long requested = (vma->vm_end - vma->vm_start) >> PAGE_SHIFT;
