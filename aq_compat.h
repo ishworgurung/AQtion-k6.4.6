@@ -297,6 +297,12 @@ static inline void eth_hw_addr_set(struct net_device *dev, const u8 *addr)
 }
 #endif
 
+/* netif_napi_add() dropped the weight argument in 6.1 */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 1, 0)
+#define netif_napi_add(dev, napi, poll) \
+	netif_napi_add(dev, napi, poll, NAPI_POLL_WEIGHT)
+#endif
+
 /* strlcpy() removed in 6.8; strscpy() has compatible semantics */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 8, 0)
 #define strlcpy(dst, src, size) strscpy(dst, src, size)
