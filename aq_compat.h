@@ -297,4 +297,31 @@ static inline void eth_hw_addr_set(struct net_device *dev, const u8 *addr)
 }
 #endif
 
+/* netif_napi_add() dropped the weight argument in 6.1 */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 1, 0)
+#define netif_napi_add(dev, napi, poll) \
+	netif_napi_add(dev, napi, poll, NAPI_POLL_WEIGHT)
+#endif
+
+/* strlcpy() removed in 6.8; strscpy() has compatible semantics */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 8, 0)
+#define strlcpy(dst, src, size) strscpy(dst, src, size)
+#endif
+
+/* del_timer_sync() renamed to timer_delete_sync() in 6.15 */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 15, 0)
+#define del_timer_sync timer_delete_sync
+#endif
+
+/* from_timer() replaced by timer_container_of() in 6.16 */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 16, 0)
+#define from_timer(var, callback_timer, timer_fieldname) \
+	timer_container_of(var, callback_timer, timer_fieldname)
+#endif
+
+/* PCI_IRQ_LEGACY renamed to PCI_IRQ_INTX in 6.17 */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 17, 0)
+#define PCI_IRQ_LEGACY PCI_IRQ_INTX
+#endif
+
 #endif /* AQ_COMPAT_H */

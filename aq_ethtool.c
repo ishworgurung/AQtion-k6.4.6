@@ -19,6 +19,7 @@
 #include "aq_hw_utils.h"
 
 #include <linux/ptp_clock_kernel.h>
+#include <linux/linkmode.h>
 
 static void aq_ethtool_get_regs(struct net_device *ndev,
 				struct ethtool_regs *regs, void *p)
@@ -604,6 +605,67 @@ static u32 aq_ethtool_get_rss_key_size(struct net_device *ndev)
 	return sizeof(cfg->aq_rss.hash_secret_key);
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 8, 0)
+static int aq_ethtool_get_rss(struct net_device *ndev,
+			      struct ethtool_rxfh_param *rxfh)
+{
+	struct aq_nic_s *aq_nic = netdev_priv(ndev);
+	struct aq_nic_cfg_s *cfg;
+	unsigned int i = 0U;
+
+	cfg = aq_nic_get_cfg(aq_nic);
+
+	rxfh->hfunc = ETH_RSS_HASH_TOP; /* Toeplitz */
+	if (rxfh->indir) {
+		for (i = 0; i < AQ_CFG_RSS_INDIRECTION_TABLE_MAX; i++)
+			rxfh->indir[i] = cfg->aq_rss.indirection_table[i];
+	}
+	if (rxfh->key)
+		memcpy(rxfh->key, cfg->aq_rss.hash_secret_key,
+		       sizeof(cfg->aq_rss.hash_secret_key));
+
+	return 0;
+}
+
+static int aq_ethtool_set_rss(struct net_device *netdev,
+			      struct ethtool_rxfh_param *rxfh,
+			      struct netlink_ext_ack *extack)
+{
+	struct aq_nic_s *aq_nic = netdev_priv(netdev);
+	const u32 *indir = rxfh->indir;
+	const u8 *key = rxfh->key;
+	const u8 hfunc = rxfh->hfunc;
+	struct aq_nic_cfg_s *cfg;
+	unsigned int i = 0U;
+	u32 rss_entries;
+	int err = 0;
+
+	cfg = aq_nic_get_cfg(aq_nic);
+	rss_entries = cfg->aq_rss.indirection_table_size;
+
+	/* We do not allow change in unsupported parameters */
+	if (hfunc != ETH_RSS_HASH_NO_CHANGE && hfunc != ETH_RSS_HASH_TOP)
+		return -EOPNOTSUPP;
+	/* Fill out the redirection table */
+	if (indir)
+		for (i = 0; i < rss_entries; i++)
+			cfg->aq_rss.indirection_table[i] = indir[i];
+
+	/* Fill out the rss hash key */
+	if (key) {
+		memcpy(cfg->aq_rss.hash_secret_key, key,
+		       sizeof(cfg->aq_rss.hash_secret_key));
+		err = aq_nic->aq_hw_ops->hw_rss_hash_set(aq_nic->aq_hw,
+			&cfg->aq_rss);
+		if (err)
+			return err;
+	}
+
+	err = aq_nic->aq_hw_ops->hw_rss_set(aq_nic->aq_hw, &cfg->aq_rss);
+
+	return err;
+}
+#else
 static int aq_ethtool_get_rss(struct net_device *ndev, u32 *indir, u8 *key,
 			      u8 *hfunc)
 {
@@ -660,6 +722,7 @@ static int aq_ethtool_set_rss(struct net_device *netdev, const u32 *indir,
 
 	return err;
 }
+#endif
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3, 19, 0)
 static int aq_ethtool_get_rss_legacy(struct net_device *ndev, u32 *indir, u8 *key)
@@ -866,8 +929,13 @@ static int aq_ethtool_set_wol(struct net_device *ndev,
 	return 0;
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
+static int aq_ethtool_get_ts_info(struct net_device *ndev,
+				  struct kernel_ethtool_ts_info *info)
+#else
 static int aq_ethtool_get_ts_info(struct net_device *ndev,
 				  struct ethtool_ts_info *info)
+#endif
 {
 	struct aq_nic_s *aq_nic = netdev_priv(ndev);
 
@@ -897,6 +965,7 @@ static int aq_ethtool_get_ts_info(struct net_device *ndev,
 	return 0;
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 9, 0)
 static u32 eee_mask_to_ethtool_mask(u32 speed)
 {
 	u32 rate = 0;
@@ -912,7 +981,94 @@ static u32 eee_mask_to_ethtool_mask(u32 speed)
 
 	return rate;
 }
+#endif
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 9, 0)
+static int aq_ethtool_get_eee(struct net_device *ndev, struct ethtool_keee *eee)
+{
+	struct aq_nic_s *aq_nic = netdev_priv(ndev);
+	u32 rate, supported_rates;
+	int err = 0;
+
+	if (!aq_nic->aq_fw_ops->get_eee_rate)
+		return -EOPNOTSUPP;
+
+	mutex_lock(&aq_nic->fwreq_mutex);
+	err = aq_nic->aq_fw_ops->get_eee_rate(aq_nic->aq_hw, &rate,
+					      &supported_rates);
+	mutex_unlock(&aq_nic->fwreq_mutex);
+	if (err < 0)
+		return err;
+
+	linkmode_zero(eee->supported);
+	if (supported_rates & AQ_NIC_RATE_EEE_10G)
+		linkmode_set_bit(ETHTOOL_LINK_MODE_10000baseT_Full_BIT,
+				 eee->supported);
+	if (supported_rates & AQ_NIC_RATE_EEE_1G)
+		linkmode_set_bit(ETHTOOL_LINK_MODE_1000baseT_Full_BIT,
+				 eee->supported);
+	if (supported_rates & AQ_NIC_RATE_EEE_100M)
+		linkmode_set_bit(ETHTOOL_LINK_MODE_100baseT_Full_BIT,
+				 eee->supported);
+
+	if (aq_nic->aq_nic_cfg.eee_speeds)
+		linkmode_copy(eee->advertised, eee->supported);
+
+	linkmode_zero(eee->lp_advertised);
+	if (rate & AQ_NIC_RATE_EEE_10G)
+		linkmode_set_bit(ETHTOOL_LINK_MODE_10000baseT_Full_BIT,
+				 eee->lp_advertised);
+	if (rate & AQ_NIC_RATE_EEE_1G)
+		linkmode_set_bit(ETHTOOL_LINK_MODE_1000baseT_Full_BIT,
+				 eee->lp_advertised);
+	if (rate & AQ_NIC_RATE_EEE_100M)
+		linkmode_set_bit(ETHTOOL_LINK_MODE_100baseT_Full_BIT,
+				 eee->lp_advertised);
+
+	eee->eee_enabled = !linkmode_empty(eee->advertised);
+	eee->tx_lpi_enabled = eee->eee_enabled;
+	if ((supported_rates & rate) & AQ_NIC_RATE_EEE_MSK)
+		eee->eee_active = true;
+
+	return 0;
+}
+
+static int aq_ethtool_set_eee(struct net_device *ndev, struct ethtool_keee *eee)
+{
+	struct aq_nic_s *aq_nic = netdev_priv(ndev);
+	u32 rate, supported_rates;
+	struct aq_nic_cfg_s *cfg;
+	int err = 0;
+
+	cfg = aq_nic_get_cfg(aq_nic);
+
+	aq_pr_verbose(aq_nic, AQ_MSG_DEBUG, "eee_enabled = %d\n", eee->eee_enabled);
+	if (unlikely(!aq_nic->aq_fw_ops->get_eee_rate ||
+		     !aq_nic->aq_fw_ops->set_eee_rate))
+		return -EOPNOTSUPP;
+
+	mutex_lock(&aq_nic->fwreq_mutex);
+	err = aq_nic->aq_fw_ops->get_eee_rate(aq_nic->aq_hw, &rate,
+					      &supported_rates);
+	mutex_unlock(&aq_nic->fwreq_mutex);
+	if (err < 0)
+		return err;
+
+	if (eee->eee_enabled) {
+		rate = supported_rates;
+		cfg->eee_speeds = rate;
+	} else {
+		rate = 0;
+		cfg->eee_speeds = 0;
+	}
+
+	mutex_lock(&aq_nic->fwreq_mutex);
+	err = aq_nic->aq_fw_ops->set_eee_rate(aq_nic->aq_hw, rate);
+	mutex_unlock(&aq_nic->fwreq_mutex);
+
+	return err;
+}
+#else
 static int aq_ethtool_get_eee(struct net_device *ndev, struct ethtool_eee *eee)
 {
 	struct aq_nic_s *aq_nic = netdev_priv(ndev);
@@ -980,6 +1136,7 @@ static int aq_ethtool_set_eee(struct net_device *ndev, struct ethtool_eee *eee)
 
 	return err;
 }
+#endif
 
 static int aq_ethtool_nway_reset(struct net_device *ndev)
 {
